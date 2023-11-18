@@ -147,7 +147,7 @@ static InsnClassExecCount riscv64_insn_classes[] = {
     { "Alu",   "alu", 0x7f, 0x7f, COUNT_CLASS}, // 9
     { "FLD", "fld", 0x7f, 0b0000111, COUNT_CLASS},
     { "FSD", "fsd", 0x7f, 0b0100111, COUNT_CLASS},
-    { "FAlu", "falu", 0x7f, 0b1000000, COUNT_CLASS},
+    { "FAlu", "falu", 0x40, 0b1000000, COUNT_CLASS},
     { "Unclassified",        "unclas", 0x00000000, 0x00000000, COUNT_INDIVIDUAL},
 };
 
@@ -185,6 +185,66 @@ static void free_record(gpointer data)
     InsnExecCount *rec = (InsnExecCount *) data;
     g_free(rec->insn);
     g_free(rec);
+}
+
+static void reset_stat() {
+    g_autoptr(GString) report = g_string_new("Instruction Classes:\n");
+    int i;
+    GList *counts;
+    InsnClassExecCount *class = NULL;
+
+    for (i = 0; i < class_table_sz; i++) {
+        class = &class_table[i];
+        switch (class->what) {
+        case COUNT_CLASS:
+            if (class->count || verbose) {
+                g_string_append_printf(report,
+                                       "Class: %-24s\t(%" PRId64 " hits)\n",
+                                       class->class,
+                                       class->count);
+            }
+            break;
+        case COUNT_INDIVIDUAL:
+            g_string_append_printf(report, "Class: %-24s\tcounted individually\n",
+                                   class->class);
+            break;
+        case COUNT_NONE:
+            g_string_append_printf(report, "Class: %-24s\tnot counted\n",
+                                   class->class);
+            break;
+        default:
+            break;
+        }
+        class->count = 0;
+    }
+
+    counts = g_hash_table_get_values(insns);
+    if (counts && g_list_next(counts)) {
+        g_string_append_printf(report, "Individual Instructions:\n");
+        counts = g_list_sort(counts, cmp_exec_count);
+
+        for (i = 0; i < limit && g_list_next(counts);
+             i++, counts = g_list_next(counts)) {
+            InsnExecCount *rec = (InsnExecCount *) counts->data;
+            g_string_append_printf(report,
+                                   "Instr: %-24s\t(%" PRId64 " hits)"
+                                   "\t(op=0x%08x/%s)\n",
+                                   rec->insn,
+                                   rec->count,
+                                   rec->opcode,
+                                   rec->class ?
+                                   rec->class->class : "un-categorised");
+            rec->count = 0;
+        }
+        g_list_free(counts);
+    }
+
+    g_hash_table_destroy(insns);
+
+    FILE *f = fopen("/tmp/stat.txt", "a+");
+    fwrite(report->str, 1, report->len, f);
+    fclose(f);
+    qemu_plugin_outs(report->str);
 }
 
 static void plugin_exit(qemu_plugin_id_t id, void *p)
@@ -254,6 +314,8 @@ static void vcpu_insn_exec_before(unsigned int cpu_index, void *udata)
     (*count)++;
 }
 
+static int stat_flag = 0;
+
 static uint64_t *find_counter(struct qemu_plugin_insn *insn)
 {
     int i;
@@ -268,6 +330,15 @@ static uint64_t *find_counter(struct qemu_plugin_insn *insn)
      * However we can fall back to individual instruction counting.
      */
     opcode = *((uint32_t *)qemu_plugin_insn_data(insn));
+    if (opcode == 0x7f) {
+        if (stat_flag) {
+            reset_stat();
+        }
+        stat_flag = !stat_flag;
+    }
+    if (!stat_flag) {
+        return NULL;
+    }
 
     uint32_t quo = opcode & 0b11;
     uint32_t bit_15 = (opcode >> 15) & 1;

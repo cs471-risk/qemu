@@ -18,6 +18,11 @@
  * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+static bool trans_set_flag(DisasContext *ctx, arg_ecall *a)
+{
+    return true;
+}
+
 static bool trans_ecall(DisasContext *ctx, arg_ecall *a)
 {
     /* always generates U-level ECALL, fixed in do_interrupt handler */
