@@ -134,6 +134,23 @@ static InsnClassExecCount sparc64_insn_classes[] = {
     { "Unclassified",        "unclas", 0x00000000, 0x00000000, COUNT_INDIVIDUAL},
 };
 
+static InsnClassExecCount riscv64_insn_classes[] = {
+    { "Jal",         "jal", 0x0000007f, 0b1101111, COUNT_CLASS}, // 0
+    { "Jalr",        "jalr", 0x0000007f, 0b1100111, COUNT_CLASS}, // 1
+    { "Branch",      "br", 0x0000007f, 0b1100011, COUNT_CLASS}, // 2
+    { "Load",        "ld", 0x0000007f, 0b0000011, COUNT_CLASS}, // 3
+    { "Store",        "st", 0x0000007f, 0b0100011, COUNT_CLASS}, // 4
+    { "Fence",        "fence", 0x0000007f, 0b0001111, COUNT_CLASS}, // 5
+    { "Csr", "csr", 0x0000007f, 0b1110011, COUNT_CLASS}, // 6
+    { "Mul/Div", "mul/div", 0x0000007f, 0b0110011 & 0b0111011, COUNT_CLASS}, // 7
+    { "Atomic", "atomic", 0x0000007f, 0b0101111, COUNT_CLASS}, // 8
+    { "Alu",   "alu", 0x7f, 0x7f, COUNT_CLASS}, // 9
+    { "FLD", "fld", 0x7f, 0b0000111, COUNT_CLASS},
+    { "FSD", "fsd", 0x7f, 0b0100111, COUNT_CLASS},
+    { "FAlu", "falu", 0x7f, 0b1000000, COUNT_CLASS},
+    { "Unclassified",        "unclas", 0x00000000, 0x00000000, COUNT_INDIVIDUAL},
+};
+
 /* Default matcher for currently unclassified architectures */
 static InsnClassExecCount default_insn_classes[] = {
     { "Unclassified",        "unclas", 0x00000000, 0x00000000, COUNT_INDIVIDUAL},
@@ -149,6 +166,7 @@ static ClassSelector class_tables[] = {
     { "aarch64", aarch64_insn_classes, ARRAY_SIZE(aarch64_insn_classes) },
     { "sparc",   sparc32_insn_classes, ARRAY_SIZE(sparc32_insn_classes) },
     { "sparc64", sparc64_insn_classes, ARRAY_SIZE(sparc64_insn_classes) },
+    { "riscv64", riscv64_insn_classes, ARRAY_SIZE(riscv64_insn_classes) },
     { NULL, default_insn_classes, ARRAY_SIZE(default_insn_classes) },
 };
 
@@ -251,11 +269,64 @@ static uint64_t *find_counter(struct qemu_plugin_insn *insn)
      */
     opcode = *((uint32_t *)qemu_plugin_insn_data(insn));
 
-    for (i = 0; !cnt && i < class_table_sz; i++) {
-        class = &class_table[i];
-        uint32_t masked_bits = opcode & class->mask;
-        if (masked_bits == class->pattern) {
-            break;
+    uint32_t quo = opcode & 0b11;
+    uint32_t bit_15 = (opcode >> 15) & 1;
+    uint32_t bit_12 = (opcode >> 12) & 1;
+    uint32_t bit_15_13 = (opcode >> 13) & 0b111;
+    uint32_t bit_11_7 = (opcode >> 7) & 0b11111;
+    uint32_t bit_6_2 = (opcode >> 2) & 0b11111;
+    uint32_t bit_6_0 = opcode & 0x7f;
+    const int jal_idx = 0;
+    const int jalr_idx = 1;
+    const int br_idx = 2;
+    const int ld_idx = 3;
+    const int st_idx = 4;
+    const int alu_idx = 9;
+    if (quo == 0) {
+        class = &class_table[
+            bit_15 ? ld_idx : st_idx
+        ];
+    } else if (quo == 1) {
+        if (bit_15_13 == 0b111 || bit_15_13 == 0b110) {
+            class = &class_table[br_idx];
+        } else if (bit_15_13 == 0b101 || bit_15_13 == 0b001) {
+            class = &class_table[jal_idx];
+        } else {
+            class = &class_table[alu_idx];
+        }
+    } else if (quo == 2) {
+        if (bit_15_13 >= 0b001 && bit_15_13 <= 0b011) {
+            class = &class_table[ld_idx];
+        } else if (bit_15_13 >= 0b101) {
+            class = &class_table[st_idx];
+        } else if (bit_15_13 == 0b100) {
+            if (bit_12 == 0 && bit_6_2 == 0) {
+                class = &class_table[jal_idx];
+            } else if (bit_12 == 1 && bit_11_7 != 0 && bit_6_2 == 0) {
+                class = &class_table[jalr_idx];
+            } else {
+                class = &class_table[alu_idx];
+            }
+        } else {
+            class = &class_table[alu_idx];
+        }
+    } else {
+        if (bit_6_0 == 0b0110111 ||
+            bit_6_0 == 0b0010111 ||
+            bit_6_0 == 0b0010011 ||
+            bit_6_0 == 0b0110011 ||
+            bit_6_0 == 0b0011011 ||
+            bit_6_0 == 0b0111011
+        ) {
+            class = &class_table[alu_idx];
+        } else {
+            for (i = 0; !cnt && i < class_table_sz; i++) {
+                class = &class_table[i];
+                uint32_t masked_bits = opcode & class->mask;
+                if (masked_bits == class->pattern) {
+                    break;
+                }
+            }
         }
     }
 
